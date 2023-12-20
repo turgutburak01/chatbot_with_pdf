@@ -6,7 +6,6 @@ from langchain.chat_models import ChatOpenAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.chains import RetrievalQA
-from qdrant_client import QdrantClient
 from langchain.vectorstores.qdrant import Qdrant
 from langchain.chains import RetrievalQA
 from langchain.memory import ConversationBufferMemory
