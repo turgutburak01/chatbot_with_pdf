@@ -94,7 +94,6 @@ python-dateutil==2.8.2
 python-dotenv==1.0.0
 pytils==0.4.1
 pytz==2023.3.post1
-pywin32==306
 pyxnat==1.6
 PyYAML==6.0.1
 qdrant-client==1.7.0
