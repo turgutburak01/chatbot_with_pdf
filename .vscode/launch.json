@@ -1,0 +1,15 @@
+{
+    "version": "1.29.0",
+    "configurations": [
+        {
+            "name": "debug streamlit",
+            "type": "python",
+            "request": "launch",
+            "program": "C:\\Users\\turgu\\OneDrive\\Masaüstü\\chatbot_with_pdf\\venv\\Lib\\site-packages\\streamlit",  // /home/xx/tmp/venv/bin/streamlit",
+            "args": [
+                "run",
+                "main.py"
+            ]
+        }
+    ]
+    }

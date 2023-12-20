@@ -1,39 +1,32 @@
 import streamlit as st 
-from streamlit_chat import message
-from dotenv import load_dotenv, find_dotenv
+from dotenv import load_dotenv
 import os
 from PyPDF2 import PdfReader 
-
-from langchain.chat_models import ChatCohere
+from langchain.chat_models import ChatOpenAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import CohereEmbeddings
+from langchain.embeddings import OpenAIEmbeddings
 from langchain.chains import RetrievalQA
 from qdrant_client import QdrantClient
-from langchain.vectorstores import qdrant
+from langchain.vectorstores.qdrant import Qdrant
 from langchain.chains import RetrievalQA
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain.prompts import PromptTemplate
-from qdrant_client import QdrantClient
-from langchain.chains.question_answering import load_qa_chain
-from qdrant_client.http.models import VectorParams, Distance
-from langchain.schema import (
-    SystemMessage, 
-    HumanMessage, 
-    AIMessage
-)
-from htmlTemplates import css, bot_template, user_template
+from qdrant_client import QdrantClient, models
 
-def init():
-    _ = load_dotenv(find_dotenv())
-    # load the Cohere API key from the environment variable
-    
-    api_key = os.environ["COHERE_API_KEY"]
-    if os.getenv('COHERE_API_KEY') is None or os.getenv('COHERE_API_KEY') == '':
-        print('COHERE_API_KEY is not set')
-        exit(1)
-    else:
-        print('COHERE_API_KEY is set')
+_ = load_dotenv()
+openai_api_key = os.getenv("OPENAI_API_KEY")
+qdrant_url = os.getenv('QDRANT_HOST')
+qdrant_api_key=os.getenv('QDRANT_API_KEY')
+llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, api_key=openai_api_key)
+
+template = """Use the following pieces of context to answer the question at the end.
+        If you don't know the answer, just say that you don't know, don't try to make up an answer.
+        Keep the answer as concise as possible. At the end of each answer, 
+        reply You can ask anything else you are curious about about your document. 
+        Answer the question in whatever language it is asked. 
+        You should not use a language other than that language."""
+rag_prompt = PromptTemplate.from_template(template)
 
 def get_pdf_text(pdf_docs):
     text = ""
@@ -44,7 +37,7 @@ def get_pdf_text(pdf_docs):
     
     return text
 
-def get_text_chunks(text, chunk_size=1000, chunk_overlap=150):
+def get_text_chunks(text, chunk_size=1200, chunk_overlap=150):
     text_splitter = RecursiveCharacterTextSplitter(
         separators=["\n\n", "\n", "(?<=\. )", " ", ""],
         chunk_size=chunk_size,
@@ -54,33 +47,7 @@ def get_text_chunks(text, chunk_size=1000, chunk_overlap=150):
     chunks = text_splitter.split_text(text)
     return chunks
 
-def get_vectorstore(text_chunks):
-    client = QdrantClient(
-        os.getenv('QDRANT_HOST'),
-        api_key=os.getenv('QDRANT_API_KEY')
-    )
-
-    # create collection
-    #os.environ['QDRANT_COLLECTION'] = 'my_collections'
-    coll_name='my_collections'
-    
-    collection_config = VectorParams(
-            size=4096, # 768 for instructor-xl, 1536 for OpenAI
-            distance=Distance.COSINE
-        )
-
-    client.recreate_collection(
-        collection_name=coll_name,
-        vectors_config=collection_config
-    )
-    
-    embeddings = CohereEmbeddings()
-    vector_store = qdrant.Qdrant(client=client, collection_name=coll_name, embeddings=embeddings)
-    vector_store.add_texts(texts=text_chunks)
-    return vector_store
-
-def get_conversation_chain(vector_store, temperature=0):
-    llm = ChatCohere(temperature=temperature)
+def get_conversation_chain(vector_store):
     memory = ConversationBufferMemory(
         memory_key='chat_history', return_messages=True)
     conversation_chain = ConversationalRetrievalChain.from_llm(
@@ -91,26 +58,33 @@ def get_conversation_chain(vector_store, temperature=0):
     
     return conversation_chain
 
-def handle_userinput(user_question):
-    response = st.session_state.conversation({'question': user_question})
-    st.session_state.chat_history = response['chat_history']
-    
-    for i, message in enumerate(st.session_state.chat_history):
-        if i % 2 == 0:
-            st.write(user_template.replace(
-                "{{MSG}}", message.content), unsafe_allow_html=True)
-        else:
-            st.write(bot_template.replace(
-                "{{MSG}}", message.content), unsafe_allow_html=True)
-            
-def main():
-    init()
+def get_qa_chain(vector_store):
+    qa_chain = RetrievalQA.from_chain_type(
+                llm=llm,
+                chain_type='stuff',
+                retriever=vector_store.as_retriever()
+                )
+    return qa_chain
 
-    st.set_page_config(page_title="Chat with multiple PDFs",
+def get_vector_store(coll_name='my_coll', embeddings=None, chunks=None):
+    client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+    client.recreate_collection(
+        collection_name=coll_name,
+        vectors_config=models.VectorParams(size=1536, distance=models.Distance.COSINE))
+
+    qdrant = Qdrant.from_texts(
+                    url=qdrant_url,
+                    api_key=qdrant_api_key,
+                    texts=chunks,
+                    embedding=embeddings,
+                    collection_name=coll_name)
+    
+    return qdrant
+def main():
+
+    st.set_page_config(page_title="Chat with PDFs",
                        page_icon=":books:")
-    
-    st.write(css, unsafe_allow_html=True)
-    
+        
     hide_st_style = """
             <style>
             #MainMenu {visibility: hidden;}
@@ -120,69 +94,44 @@ def main():
             """
     st.markdown(hide_st_style, unsafe_allow_html=True)
     
+    embeddings = OpenAIEmbeddings()
     
-    
-    if "conversation" not in st.session_state:
-        st.session_state.conversation = None
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = None
+    if "messages" not in st.session_state:
+        st.session_state.messages = []  
+    if "chain" not in st.session_state:
+        st.session_state.chain = None
         
-    st.header("Chat with multiple PDFs :books:")
+    st.sidebar.title("Chat with PDFs :books:")
+
+    user_question = st.chat_input("Ask a question about your documents:")
     
-    user_question = st.text_input("Ask a question about your documents:")
-    
-    if user_question:
-        handle_userinput(user_question)
+    for message in st.session_state.messages:
+        with st.chat_message(message.get("role")):
+            st.write(message.get("content"))
+            
+    st.sidebar.subheader("Your documents")
     
     with st.sidebar:
-        st.subheader("Your documents")
-        pdf_docs = st.file_uploader(
-            "Upload your PDFs here and click on 'Process'", accept_multiple_files=True)
-        if st.button("Process"):
+        pdf = st.file_uploader(
+        "Upload your PDFs here and click on 'Process'", accept_multiple_files=True, type="pdf")
+        process = st.button("Process")
+        
+        if pdf and process:
             with st.spinner("Processing"):
-                # get pdf text
-                raw_text = get_pdf_text(pdf_docs)
-                print('raw_text length:', len(raw_text))
-                print('raw_text type:', type(raw_text))
-                
-                #new_docs = [Document(page_content=doc) for doc in raw_text]
-                # get the text chunks
-                text_chunks = get_text_chunks(raw_text)
-                print('text_chunks length:', len(text_chunks))
-                print('text_chunks type:', type(text_chunks))
-                
-                # create vector store
-                vector_store = get_vectorstore(text_chunks)
-                
-                                
-                # Build prompt
-                template = """Use the following pieces of context to answer the question at the end.
-                If you don't know the answer, just say that you don't know, don't try to make up an answer.
-                Use three sentences maximum. Keep the answer as concise as possible. 
-                Always say "thanks for asking!" at the end of the answer. 
-                {context}
-                Question: {question}
-                Helpful Answer:"""
-                QA_CHAIN_PROMPT = PromptTemplate.from_template(template)
-                
-                qa_chain = RetrievalQA.from_chain_type(
-                    llm=ChatCohere(temperature=0),
-                    chain_type_kwargs={"prompt": QA_CHAIN_PROMPT},
-                    retriever=vector_store.as_retriever(),
-                    return_source_documents=True
-                )
-
-                question = """'The most beautiful thing in the world must be ......'\n
-                        can you complete it?"""
-                response = qa_chain({"query": question})
-                print(response["result"])
-                print(response["source_documents"][0])
-
-                #found_docs = vector_store.similarity_search("Yazılım Sürecinde Gereksinim ve Tasarım")
-                #print(found_docs)
-                
-                # create conversation chain
-                #st.session_state.conversation = get_conversation_chain(vector_store, temperature=0)
+                raw_text = get_pdf_text(pdf)
+                chunks = get_text_chunks(raw_text)
+                qdrant = get_vector_store(embeddings=embeddings, chunks=chunks)
+                st.session_state.chain = get_qa_chain(qdrant)
+            
+    if user_question and st.session_state.chain is not None:
+        st.session_state.messages.append({"role": "user", "content": user_question})
+        with st.chat_message("user"):
+            st.write(user_question)
+        with st.spinner("Thinking..."):
+            result = st.session_state.chain(user_question)["result"]
+            st.session_state.messages.append({"role": "assistant", "content": result})
+        with st.chat_message("assistant"):
+            st.write(result)     
         
 if __name__ == '__main__':
     main()
